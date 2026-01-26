@@ -13,10 +13,11 @@ dotenvy = "0.15"
 image = { version = "0.24", default-features = false, features = ["jpeg", "png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rscam = "0.5.5"
+v4l = "0.14"

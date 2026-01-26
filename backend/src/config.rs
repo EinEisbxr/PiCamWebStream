@@ -16,6 +16,10 @@ pub struct Config {
     pub resolution_height: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub camera_device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuning_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_args: Option<String>,
 }
 
 impl Config {
@@ -36,7 +40,7 @@ impl Config {
             .ok()
             .map(|raw| raw.parse().context("Invalid FRAME_RATE"))
             .transpose()?
-            .unwrap_or(12.0);
+            .unwrap_or(30.0);
 
         if !(1.0..=60.0).contains(&frame_rate) {
             return Err(anyhow!("FRAME_RATE must be between 1 and 60"));
@@ -46,13 +50,13 @@ impl Config {
             .ok()
             .map(|raw| raw.parse().context("Invalid FRAME_WIDTH"))
             .transpose()?
-            .unwrap_or(1280);
+            .unwrap_or(3840);
 
         let resolution_height = env::var("FRAME_HEIGHT")
             .ok()
             .map(|raw| raw.parse().context("Invalid FRAME_HEIGHT"))
             .transpose()?
-            .unwrap_or(720);
+            .unwrap_or(2160);
 
         if resolution_width == 0 || resolution_height == 0 {
             return Err(anyhow!(
@@ -71,6 +75,9 @@ impl Config {
             })
             .or_else(Self::default_camera_device);
 
+        let tuning_file = env::var("RPICAM_TUNING_FILE").ok();
+        let extra_args = env::var("RPICAM_EXTRA_ARGS").ok();
+
         Ok(Self {
             listen_address,
             port,
@@ -78,6 +85,8 @@ impl Config {
             resolution_width,
             resolution_height,
             camera_device,
+            tuning_file,
+            extra_args,
         })
     }
 

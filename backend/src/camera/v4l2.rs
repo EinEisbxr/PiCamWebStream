@@ -6,7 +6,11 @@ use std::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use image::{codecs::jpeg::JpegEncoder, ImageBuffer, Rgb};
-use rscam::{self, Config as V4l2Config};
+use v4l::buffer::Type;
+use v4l::io::traits::CaptureStream;
+use v4l::prelude::*;
+use v4l::video::Capture;
+use v4l::FourCC;
 use tokio::task;
 
 use super::Camera;
@@ -18,53 +22,50 @@ enum PixelFormat {
 }
 
 pub struct V4l2Camera {
-    camera: Arc<Mutex<rscam::Camera>>,
+    device: Arc<Mutex<Device>>,
     width: u32,
     height: u32,
     pixel_format: PixelFormat,
 }
 
 impl V4l2Camera {
-    pub fn new(device: &str, width: u32, height: u32, frame_rate: f32) -> Result<Self> {
-        let mut camera = rscam::Camera::new(device)
-            .with_context(|| format!("Failed to open camera device {device}"))?;
+    pub fn new(device_path: &str, width: u32, height: u32, frame_rate: f32) -> Result<Self> {
+        let dev = Device::with_path(device_path)
+            .with_context(|| format!("Failed to open camera device {device_path}"))?;
 
-        let fps = frame_rate.max(1.0).round() as u32;
-        let resolution = (width, height);
+        // Try to get current format, or use a default if it fails
+        let mut format = match dev.format() {
+            Ok(fmt) => fmt,
+            Err(err) => {
+                tracing::warn!(?err, "Failed to get current camera format, using default");
+                v4l::Format::new(width, height, FourCC::new(b"YUYV"))
+            }
+        };
+
+        format.width = width;
+        format.height = height;
 
         let mut pixel_format = PixelFormat::Mjpeg;
+        format.fourcc = FourCC::new(b"MJPG");
 
-        match camera.start(&V4l2Config {
-            interval: (1, fps.max(1)),
-            resolution,
-            format: *b"MJPG",
-            ..Default::default()
-        }) {
-            Ok(()) => {}
-            Err(err) => {
-                tracing::warn!(?resolution, fps, device, error = %err, "MJPG format unsupported, falling back to YUYV");
-                let second_attempt = camera.start(&V4l2Config {
-                    interval: (1, fps.max(1)),
-                    resolution,
-                    format: *b"YUYV",
-                    ..Default::default()
-                });
+        if let Err(err) = dev.set_format(&format) {
+            tracing::warn!(?err, "MJPG format unsupported or failed to set, trying YUYV");
+            format.fourcc = FourCC::new(b"YUYV");
+            dev.set_format(&format)
+                .map_err(|e| anyhow::anyhow!("Camera does not support MJPG or YUYV: {}", e))?;
+            pixel_format = PixelFormat::Yuyv;
+        }
 
-                match second_attempt {
-                    Ok(()) => {
-                        pixel_format = PixelFormat::Yuyv;
-                    }
-                    Err(second_err) => {
-                        return Err(anyhow::anyhow!(
-                            "Failed to configure camera for MJPG ({err}) and YUYV ({second_err})"
-                        ));
-                    }
-                }
+        // Attempt to set the frame rate (interval)
+        if let Ok(mut params) = dev.params() {
+            params.interval = v4l::Fraction::new(1, frame_rate.max(1.0) as u32);
+            if let Err(err) = dev.set_params(&params) {
+                tracing::warn!(?err, "Failed to set camera frame rate (expected on some devices like Pi 5)");
             }
         }
 
         Ok(Self {
-            camera: Arc::new(Mutex::new(camera)),
+            device: Arc::new(Mutex::new(dev)),
             width,
             height,
             pixel_format,
@@ -75,20 +76,26 @@ impl V4l2Camera {
 #[async_trait]
 impl Camera for V4l2Camera {
     async fn capture_frame(&self) -> Result<Vec<u8>> {
-        let camera = self.camera.clone();
+        let device = self.device.clone();
         let width = self.width;
         let height = self.height;
         let format = self.pixel_format;
 
-        task::spawn_blocking(move || {
-            let mut camera = camera.lock().expect("v4l2 camera lock poisoned");
-            let frame = camera
-                .capture()
-                .context("Failed to capture frame from v4l2 camera")?;
+        task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let mut dev = device.lock().expect("v4l2 camera lock poisoned");
+            
+            // Create a stream for a single frame capture. 
+            // While slightly slower than keeping a persistent stream, it's more robust
+            // against device state issues and easier to manage lifetimes with the Camera trait.
+            let mut stream = MmapStream::with_buffers(&mut *dev, Type::VideoCapture, 4)
+                .map_err(|e| anyhow::anyhow!("Failed to create mmap stream: {}", e))?;
+            
+            let (data, _) = stream.next()
+                .map_err(|e| anyhow::anyhow!("Failed to capture frame from v4l2 next(): {}", e))?;
 
             match format {
-                PixelFormat::Mjpeg => Ok(frame.to_vec()),
-                PixelFormat::Yuyv => yuyv_to_jpeg(&frame, width, height),
+                PixelFormat::Mjpeg => Ok(data.to_vec()),
+                PixelFormat::Yuyv => yuyv_to_jpeg(data, width, height),
             }
         })
         .await

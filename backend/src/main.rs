@@ -14,10 +14,11 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 #[cfg(target_os = "linux")]
-use camera::V4l2Camera;
+use camera::{V4l2Camera, RpiCamCamera};
 use camera::{Camera, MockCamera};
 use config::Config;
 use tokio::{net::TcpListener, signal, time::interval};
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -25,6 +26,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 struct AppState {
     camera: Arc<dyn Camera>,
     config: Config,
+    shutdown: CancellationToken,
 }
 
 #[tokio::main]
@@ -36,8 +38,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(?config, "Loaded configuration");
 
     let camera = build_camera(&config);
+    let shutdown = CancellationToken::new();
 
-    let state = AppState { camera, config };
+    let state = AppState { camera, config, shutdown: shutdown.clone() };
     let addr: SocketAddr = state.config.listen_socket_addr();
 
     let app = Router::new()
@@ -58,8 +61,13 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%addr, "Backend listening");
 
+    let server_shutdown = shutdown_signal();
+    
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            server_shutdown.await;
+            shutdown.cancel();
+        })
         .await
         .context("Server error")
 }
@@ -68,27 +76,34 @@ async fn stream_handler(State(state): State<AppState>) -> Response {
     let boundary = "frame";
     let mut ticker = interval(state.config.frame_interval());
     let camera = state.camera.clone();
+    let shutdown = state.shutdown.clone();
 
     let stream = async_stream::stream! {
         loop {
-            ticker.tick().await;
-            match camera.capture_frame().await {
-                Ok(frame) => {
-                    let mut chunk = BytesMut::with_capacity(frame.len() + 128);
-                    chunk.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-                    chunk.extend_from_slice(b"Content-Type: image/jpeg\r\n");
-                    chunk.extend_from_slice(format!("Content-Length: {}\r\n\r\n", frame.len()).as_bytes());
-                    chunk.extend_from_slice(&frame);
-                    chunk.extend_from_slice(b"\r\n");
-                    yield Ok::<Bytes, Infallible>(chunk.freeze());
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    break;
                 }
-                Err(err) => {
-                    tracing::error!(error = %err, "Camera capture failed");
-                    let mut chunk = BytesMut::new();
-                    chunk.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-                    chunk.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
-                    chunk.extend_from_slice(b"camera-error\r\n");
-                    yield Ok::<Bytes, Infallible>(chunk.freeze());
+                _ = ticker.tick() => {
+                    match camera.capture_frame().await {
+                        Ok(frame) => {
+                            let mut chunk = BytesMut::with_capacity(frame.len() + 128);
+                            chunk.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                            chunk.extend_from_slice(b"Content-Type: image/jpeg\r\n");
+                            chunk.extend_from_slice(format!("Content-Length: {}\r\n\r\n", frame.len()).as_bytes());
+                            chunk.extend_from_slice(&frame);
+                            chunk.extend_from_slice(b"\r\n");
+                            yield Ok::<Bytes, Infallible>(chunk.freeze());
+                        }
+                        Err(err) => {
+                            tracing::error!(error = %err, "Camera capture failed");
+                            let mut chunk = BytesMut::new();
+                            chunk.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                            chunk.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+                            chunk.extend_from_slice(b"camera-error\r\n");
+                            yield Ok::<Bytes, Infallible>(chunk.freeze());
+                        }
+                    }
                 }
             }
         }
@@ -148,6 +163,24 @@ fn init_tracing() -> anyhow::Result<()> {
 fn build_camera(config: &Config) -> Arc<dyn Camera> {
     #[cfg(target_os = "linux")]
     {
+        // Try rpicam-vid (libcamera) first as it is preferred on modern Pi hardware
+        match RpiCamCamera::new(
+            config.resolution_width,
+            config.resolution_height,
+            config.frame_rate,
+            config.tuning_file.as_deref(),
+            config.extra_args.as_deref(),
+        ) {
+            Ok(rpi_camera) => {
+                tracing::info!("Using rpicam-vid (libcamera) for capture");
+                return Arc::new(rpi_camera);
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "rpicam-vid unavailable or failed to start");
+            }
+        }
+
+        // Fallback to V4L2 if rpicam-vid is not an option
         if let Some(device) = config.camera_device.as_deref() {
             match V4l2Camera::new(
                 device,
@@ -157,11 +190,10 @@ fn build_camera(config: &Config) -> Arc<dyn Camera> {
             ) {
                 Ok(real_camera) => {
                     tracing::info!(device, "Using V4L2 camera device");
-                    let camera: Arc<dyn Camera> = Arc::new(real_camera);
-                    return camera;
+                    return Arc::new(real_camera);
                 }
                 Err(err) => {
-                    tracing::error!(device, error = %err, "Falling back to mock camera");
+                    tracing::error!(device, error = %err, "Failed to initialize V4L2 camera");
                 }
             }
         } else {
