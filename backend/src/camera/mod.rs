@@ -17,4 +17,6 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait Camera: Send + Sync {
     async fn capture_frame(&self) -> anyhow::Result<Vec<u8>>;
+    
+    async fn shutdown(&self) {}
 }

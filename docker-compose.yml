@@ -1,30 +1,31 @@
-version: '3.9'
-
 services:
     backend:
         build:
             context: ./backend
-        environment:
-            BACKEND_HOST: 0.0.0.0
-            BACKEND_PORT: 8080
-            FRAME_RATE: 12
-            FRAME_WIDTH: 1280
-            FRAME_HEIGHT: 720
+        env_file:
+            - .env
         ports:
             - '8080:8080'
         restart: unless-stopped
+        privileged: true
+        devices:
+            - "/dev:/dev"
+        volumes:
+            - "/run/udev:/run/udev:ro"
+            # Required for Pi Camera DMA heap allocation
+            - "/dev/dma_heap:/dev/dma_heap"
+        group_add:
+            - video
         networks:
             - picam
 
     frontend:
         build:
             context: ./frontend
-            args:
-                VITE_BACKEND_URL: http://backend:8080
         depends_on:
             - backend
         ports:
-            - '3000:4173'
+            - '3000:80'
         restart: unless-stopped
         networks:
             - picam

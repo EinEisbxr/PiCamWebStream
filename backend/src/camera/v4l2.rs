@@ -26,10 +26,11 @@ pub struct V4l2Camera {
     width: u32,
     height: u32,
     pixel_format: PixelFormat,
+    quality: u32,
 }
 
 impl V4l2Camera {
-    pub fn new(device_path: &str, width: u32, height: u32, frame_rate: f32) -> Result<Self> {
+    pub fn new(device_path: &str, width: u32, height: u32, frame_rate: f32, quality: u32) -> Result<Self> {
         let dev = Device::with_path(device_path)
             .with_context(|| format!("Failed to open camera device {device_path}"))?;
 
@@ -69,6 +70,7 @@ impl V4l2Camera {
             width,
             height,
             pixel_format,
+            quality,
         })
     }
 }
@@ -80,6 +82,7 @@ impl Camera for V4l2Camera {
         let width = self.width;
         let height = self.height;
         let format = self.pixel_format;
+        let quality = self.quality;
 
         task::spawn_blocking(move || -> Result<Vec<u8>> {
             let mut dev = device.lock().expect("v4l2 camera lock poisoned");
@@ -95,7 +98,7 @@ impl Camera for V4l2Camera {
 
             match format {
                 PixelFormat::Mjpeg => Ok(data.to_vec()),
-                PixelFormat::Yuyv => yuyv_to_jpeg(data, width, height),
+                PixelFormat::Yuyv => yuyv_to_jpeg(data, width, height, quality),
             }
         })
         .await
@@ -103,7 +106,7 @@ impl Camera for V4l2Camera {
     }
 }
 
-fn yuyv_to_jpeg(frame: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+fn yuyv_to_jpeg(frame: &[u8], width: u32, height: u32, quality: u32) -> Result<Vec<u8>> {
     let expected_len = (width as usize) * (height as usize) * 2;
     if frame.len() < expected_len {
         anyhow::bail!(
@@ -137,7 +140,7 @@ fn yuyv_to_jpeg(frame: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
         .context("Failed to build RGB buffer from YUYV data")?;
 
     let mut cursor = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut cursor, 85);
+    let mut encoder = JpegEncoder::new_with_quality(&mut cursor, quality as u8);
     encoder
         .encode_image(&buffer)
         .context("Failed to encode YUYV frame to JPEG")?;

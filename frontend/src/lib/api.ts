@@ -1,6 +1,6 @@
 import type { BackendConfig } from './types';
 
-const DEFAULT_BACKEND = 'http://localhost:8080';
+const DEFAULT_BACKEND = '';
 
 function backendBaseUrl(): string {
     const fromEnv = import.meta.env.VITE_BACKEND_URL as string | undefined;
@@ -9,8 +9,8 @@ function backendBaseUrl(): string {
     }
 
     if (typeof window !== 'undefined') {
-        const { origin } = window.location;
-        return origin.replace(/(?::\d+)?$/, ':8080');
+        // Use relative URL to support proxying
+        return '';
     }
 
     return DEFAULT_BACKEND;

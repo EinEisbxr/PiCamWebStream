@@ -28,10 +28,38 @@ Environment variables:
 | --------------- | ---------------------- | --------------------------------------------------------- |
 | `BACKEND_HOST`  | `0.0.0.0`              | Address to bind the HTTP server                           |
 | `BACKEND_PORT`  | `8080`                 | HTTP port                                                 |
-| `FRAME_RATE`    | `12`                   | Target frames per second (1-60)                           |
-| `FRAME_WIDTH`   | `1280`                 | Stream width                                              |
-| `FRAME_HEIGHT`  | `720`                  | Stream height                                             |
-| `CAMERA_DEVICE` | `/dev/video0` on Linux | V4L2 device path; unset or empty to force the mock camera |
+| `FRAME_RATE`      | `30`                   | Target frames per second (1-60)                           |
+| `FRAME_WIDTH`     | `3840`                 | Stream width                                              |
+| `FRAME_HEIGHT`    | `2160`                 | Stream height                                             |
+| `CAMERA_DEVICE`   | `/dev/video0` on Linux | V4L2 device path; unset or empty to force the mock camera |
+| `STREAM_USER`     | (unset)                | Username for Basic Auth (optional)                        |
+| `STREAM_PASSWORD` | (unset)                | Password for Basic Auth (optional)                        |
+
+## Home Assistant Integration
+
+You can easily add this camera to your Home Assistant dashboard using the **Generic Camera** or **MJPEG** integration.
+
+### Option 1: Generic IP Camera (Preferred)
+In your Home Assistant `configuration.yaml`:
+
+```yaml
+camera:
+  - platform: generic
+    name: "Pi Camera"
+    still_image_url: http://<PI_IP_ADDRESS>:8080/snapshot
+    stream_source: http://<PI_IP_ADDRESS>:8080/stream
+    authentication: basic
+    username: "your_user" # if configured
+    password: "your_password" # if configured
+```
+
+### Option 2: MJPEG IP Camera
+```yaml
+camera:
+  - platform: mjpeg
+    name: "Pi Camera Stream"
+    mjpeg_url: http://<PI_IP_ADDRESS>:8080/stream
+```
 
 ### Frontend
 
@@ -39,7 +67,7 @@ Environment variables:
 -   Styling: [Tailwind CSS](https://tailwindcss.com/)
 -   Fetches backend config + health status and displays the MJPEG stream.
 
-To point to a different backend, set `VITE_BACKEND_URL` (defaults to `http://localhost:8080` in development, `http://backend:8080` inside docker-compose).
+To point to a different backend, set `VITE_BACKEND_URL`. If unset, the frontend will automatically connect to the backend on port 8080 using the same IP address/hostname used to access the website.
 
 ## Development
 

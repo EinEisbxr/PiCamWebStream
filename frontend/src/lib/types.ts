@@ -5,4 +5,5 @@ export interface BackendConfig {
     resolution_width: number;
     resolution_height: number;
     camera_device?: string | null;
+    auth_enabled: boolean;
 }

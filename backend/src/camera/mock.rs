@@ -15,14 +15,16 @@ pub struct MockCamera {
     counter: Arc<Mutex<u64>>,
     width: u32,
     height: u32,
+    quality: u32,
 }
 
 impl MockCamera {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32, quality: u32) -> Self {
         Self {
             counter: Arc::new(Mutex::new(0)),
             width,
             height,
+            quality,
         }
     }
 }
@@ -37,15 +39,16 @@ impl Camera for MockCamera {
         };
         let width = self.width;
         let height = self.height;
+        let quality = self.quality;
 
-        let jpeg = task::spawn_blocking(move || generate_frame(width, height, counter))
+        let jpeg = task::spawn_blocking(move || generate_frame(width, height, counter, quality))
             .await
             .expect("spawn blocking failed")?;
         Ok(jpeg)
     }
 }
 
-fn generate_frame(width: u32, height: u32, counter: u64) -> Result<Vec<u8>> {
+fn generate_frame(width: u32, height: u32, counter: u64, quality: u32) -> Result<Vec<u8>> {
     let mut buffer = ImageBuffer::from_fn(width, height, |x, y| {
         let t = counter as f32;
         let xf = x as f32 / width.max(1) as f32;
@@ -63,7 +66,7 @@ fn generate_frame(width: u32, height: u32, counter: u64) -> Result<Vec<u8>> {
     }
 
     let mut cursor = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut cursor, 80);
+    let mut encoder = JpegEncoder::new_with_quality(&mut cursor, quality as u8);
     encoder.encode(&buffer, width, height, ColorType::Rgb8)?;
 
     Ok(cursor.into_inner())

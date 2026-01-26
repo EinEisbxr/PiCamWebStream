@@ -7,7 +7,7 @@ use anyhow::Context;
 use axum::{
     body::Body,
     extract::State,
-    http::{header, Method, StatusCode},
+    http::{header, Method, StatusCode, HeaderMap},
     response::{AppendHeaders, IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -21,6 +21,8 @@ use tokio::{net::TcpListener, signal, time::interval};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{fmt, EnvFilter};
+use axum::extract::Query;
+use base64::prelude::*;
 
 #[derive(Clone)]
 struct AppState {
@@ -38,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(?config, "Loaded configuration");
 
     let camera = build_camera(&config);
+    let camera_clone = camera.clone();
     let shutdown = CancellationToken::new();
 
     let state = AppState { camera, config, shutdown: shutdown.clone() };
@@ -45,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/stream", get(stream_handler))
+        .route("/snapshot", get(snapshot_handler))
         .route("/config", get(config_handler))
         .route("/health", get(health_handler))
         .with_state(state.clone())
@@ -69,10 +73,49 @@ async fn main() -> anyhow::Result<()> {
             shutdown.cancel();
         })
         .await
-        .context("Server error")
+        .context("Server error")?;
+
+    tracing::info!("Shutting down camera...");
+    camera_clone.shutdown().await;
+
+    Ok(())
 }
 
-async fn stream_handler(State(state): State<AppState>) -> Response {
+async fn stream_handler(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    // Basic Auth Check
+    if let (Some(expected_user), Some(expected_pass)) = (&state.config.stream_user, &state.config.stream_password) {
+        let auth_header = headers.get(header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+        
+        // Also check query param 'auth' (base64 encoded user:pass)
+        let auth_query = query.get("auth").map(|s| s.as_str());
+
+        let authenticated = if let Some(auth) = auth_header {
+            if auth.starts_with("Basic ") {
+                let encoded = &auth[6..];
+                check_auth(encoded, expected_user, expected_pass)
+            } else {
+                false
+            }
+        } else if let Some(encoded) = auth_query {
+            check_auth(encoded, expected_user, expected_pass)
+        } else {
+            false
+        };
+
+        if !authenticated {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Basic realm=\"PiCam Stream\"")],
+                "Unauthorized",
+            ).into_response();
+        }
+    }
+
     let boundary = "frame";
     let mut ticker = interval(state.config.frame_interval());
     let camera = state.camera.clone();
@@ -115,6 +158,61 @@ async fn stream_handler(State(state): State<AppState>) -> Response {
     )]);
     let body = Body::from_stream(stream);
     (headers, body).into_response()
+}
+
+fn check_auth(encoded: &str, expected_user: &str, expected_pass: &str) -> bool {
+    if let Ok(decoded) = BASE64_STANDARD.decode(encoded) {
+        if let Ok(user_pass) = String::from_utf8(decoded) {
+            if let Some((user, pass)) = user_pass.split_once(':') {
+                return user == expected_user && pass == expected_pass;
+            }
+        }
+    }
+    false
+}
+
+async fn snapshot_handler(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    // Basic Auth Check (reuse same logic)
+    if let (Some(expected_user), Some(expected_pass)) = (&state.config.stream_user, &state.config.stream_password) {
+        let auth_header = headers.get(header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+        let auth_query = query.get("auth").map(|s| s.as_str());
+
+        let authenticated = if let Some(auth) = auth_header {
+            if auth.starts_with("Basic ") {
+                check_auth(&auth[6..], expected_user, expected_pass)
+            } else {
+                false
+            }
+        } else if let Some(encoded) = auth_query {
+            check_auth(encoded, expected_user, expected_pass)
+        } else {
+            false
+        };
+
+        if !authenticated {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Basic realm=\"PiCam Stream\"")],
+                "Unauthorized",
+            ).into_response();
+        }
+    }
+
+    match state.camera.capture_frame().await {
+        Ok(frame) => (
+            [(header::CONTENT_TYPE, "image/jpeg")],
+            frame,
+        ).into_response(),
+        Err(err) => {
+            tracing::error!(error = %err, "Camera snapshot failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Camera capture failed").into_response()
+        }
+    }
 }
 
 async fn config_handler(State(state): State<AppState>) -> Json<Config> {
@@ -161,6 +259,15 @@ fn init_tracing() -> anyhow::Result<()> {
 }
 
 fn build_camera(config: &Config) -> Arc<dyn Camera> {
+    if std::env::var("FORCE_MOCK_CAMERA").is_ok() {
+        tracing::info!("Mock camera forced by environment variable");
+        return Arc::new(MockCamera::new(
+            config.resolution_width,
+            config.resolution_height,
+            config.video_quality,
+        ));
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Try rpicam-vid (libcamera) first as it is preferred on modern Pi hardware
@@ -168,6 +275,7 @@ fn build_camera(config: &Config) -> Arc<dyn Camera> {
             config.resolution_width,
             config.resolution_height,
             config.frame_rate,
+            config.video_quality,
             config.tuning_file.as_deref(),
             config.extra_args.as_deref(),
         ) {
@@ -176,7 +284,7 @@ fn build_camera(config: &Config) -> Arc<dyn Camera> {
                 return Arc::new(rpi_camera);
             }
             Err(err) => {
-                tracing::debug!(error = %err, "rpicam-vid unavailable or failed to start");
+                tracing::warn!(error = %err, "rpicam-vid unavailable or failed to start, falling back to V4L2");
             }
         }
 
@@ -187,6 +295,7 @@ fn build_camera(config: &Config) -> Arc<dyn Camera> {
                 config.resolution_width,
                 config.resolution_height,
                 config.frame_rate,
+                config.video_quality,
             ) {
                 Ok(real_camera) => {
                     tracing::info!(device, "Using V4L2 camera device");
@@ -204,5 +313,6 @@ fn build_camera(config: &Config) -> Arc<dyn Camera> {
     Arc::new(MockCamera::new(
         config.resolution_width,
         config.resolution_height,
+        config.video_quality,
     ))
 }

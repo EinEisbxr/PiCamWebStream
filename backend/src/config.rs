@@ -14,12 +14,18 @@ pub struct Config {
     pub frame_rate: f32,
     pub resolution_width: u32,
     pub resolution_height: u32,
+    pub video_quality: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub camera_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tuning_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_args: Option<String>,
+    #[serde(skip_serializing)]
+    pub stream_user: Option<String>,
+    #[serde(skip_serializing)]
+    pub stream_password: Option<String>,
+    pub auth_enabled: bool,
 }
 
 impl Config {
@@ -64,6 +70,16 @@ impl Config {
             ));
         }
 
+        let video_quality = env::var("VIDEO_QUALITY")
+            .ok()
+            .map(|raw| raw.parse().context("Invalid VIDEO_QUALITY"))
+            .transpose()?
+            .unwrap_or(80);
+
+        if !(1..=100).contains(&video_quality) {
+            return Err(anyhow!("VIDEO_QUALITY must be between 1 and 100"));
+        }
+
         let camera_device = env::var("CAMERA_DEVICE")
             .ok()
             .and_then(|value| {
@@ -78,15 +94,23 @@ impl Config {
         let tuning_file = env::var("RPICAM_TUNING_FILE").ok();
         let extra_args = env::var("RPICAM_EXTRA_ARGS").ok();
 
+        let stream_user = env::var("STREAM_USER").ok().filter(|s| !s.trim().is_empty());
+        let stream_password = env::var("STREAM_PASSWORD").ok().filter(|s| !s.trim().is_empty());
+        let auth_enabled = stream_user.is_some() && stream_password.is_some();
+
         Ok(Self {
             listen_address,
             port,
             frame_rate,
             resolution_width,
             resolution_height,
+            video_quality,
             camera_device,
             tuning_file,
             extra_args,
+            stream_user,
+            stream_password,
+            auth_enabled,
         })
     }
 
