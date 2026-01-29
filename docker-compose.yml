@@ -24,7 +24,6 @@ services:
             context: ./frontend
         environment:
             - BACKEND_PORT=${BACKEND_PORT:-8080}
-            - NGINX_ENVSUBST_FILTER=$$BACKEND_PORT
         depends_on:
             - backend
         ports:
