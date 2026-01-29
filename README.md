@@ -22,12 +22,19 @@ Easily deploy a Raspberry Pi camera web stream with a Rust backend and a modern 
     -   Health check via `/health`
     -   Uses a V4L2 camera on Linux by default (e.g. `/dev/video0`), falling back to the mock generator when unavailable.
 
-Environment variables:
+### General Configuration
+
+You can configure the project using environment variables. When using Docker Compose, you can create a `.env` file by copying the example:
+
+```bash
+cp .env.example .env
+```
 
 | Variable        | Default                | Description                                               |
 | --------------- | ---------------------- | --------------------------------------------------------- |
-| `BACKEND_HOST`  | `0.0.0.0`              | Address to bind the HTTP server                           |
-| `BACKEND_PORT`  | `8080`                 | HTTP port                                                 |
+| `PORT`          | `3000`                 | Public port to access the web interface                   |
+| `BACKEND_HOST`  | `0.0.0.0`              | Address for the backend to bind to                        |
+| `BACKEND_PORT`  | `8080`                 | Internal port for the backend                             |
 | `FRAME_RATE`      | `30`                   | Target frames per second (1-60)                           |
 | `FRAME_WIDTH`     | `3840`                 | Stream width                                              |
 | `FRAME_HEIGHT`    | `2160`                 | Stream height                                             |
@@ -37,7 +44,7 @@ Environment variables:
 
 ## Home Assistant Integration
 
-You can easily add this camera to your Home Assistant dashboard using the **Generic Camera** or **MJPEG** integration.
+You can easily add this camera to your Home Assistant dashboard using the **Generic Camera** or **MJPEG** integration. Use the public `PORT` (default 3000) for access.
 
 ### Option 1: Generic IP Camera (Preferred)
 In your Home Assistant `configuration.yaml`:
@@ -46,8 +53,8 @@ In your Home Assistant `configuration.yaml`:
 camera:
   - platform: generic
     name: "Pi Camera"
-    still_image_url: http://<PI_IP_ADDRESS>:8080/snapshot
-    stream_source: http://<PI_IP_ADDRESS>:8080/stream
+    still_image_url: http://<PI_IP_ADDRESS>:3000/snapshot
+    stream_source: http://<PI_IP_ADDRESS>:3000/stream
     authentication: basic
     username: "your_user" # if configured
     password: "your_password" # if configured
@@ -58,7 +65,7 @@ camera:
 camera:
   - platform: mjpeg
     name: "Pi Camera Stream"
-    mjpeg_url: http://<PI_IP_ADDRESS>:8080/stream
+    mjpeg_url: http://<PI_IP_ADDRESS>:3000/stream
 ```
 
 ### Frontend
@@ -67,7 +74,7 @@ camera:
 -   Styling: [Tailwind CSS](https://tailwindcss.com/)
 -   Fetches backend config + health status and displays the MJPEG stream.
 
-To point to a different backend, set `VITE_BACKEND_URL`. If unset, the frontend will automatically connect to the backend on port 8080 using the same IP address/hostname used to access the website.
+To point to a different backend, set `VITE_BACKEND_URL`. If unset, the frontend will automatically connect to the backend (via the Nginx proxy) using the same IP address/hostname used to access the website.
 
 ## Development
 
@@ -97,9 +104,9 @@ docker compose up --build
 ```
 
 -   Frontend available at http://localhost:3000
--   Backend API (and mock MJPEG stream) at http://localhost:8080
+-   Backend API (directly) at http://localhost:8080
 
-The frontend container now serves the built app using Vite's preview server (listening on port 4173 inside the container and forwarded to port 3000 on your host).
+The frontend container serves the built app using Nginx (listening on port 80 inside the container and forwarded to port 3000 on your host by default).
 
 ### Individual images
 
@@ -113,8 +120,8 @@ cd frontend
 npm install
 npm run build
 docker build -t picam-frontend .
-# Runs on port 4173 inside the container
-docker run --rm -p 3000:4173 picam-frontend
+# Runs on port 80 inside the container
+docker run --rm -p 3000:80 picam-frontend
 ```
 
 ## Next steps

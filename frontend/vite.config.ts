@@ -4,7 +4,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig(({ mode }: { mode: string }) => {
     const env = loadEnv(mode, cwd(), '');
-    const backendUrl = env.VITE_BACKEND_URL ?? 'http://localhost:8080';
+    const backendPort = env.BACKEND_PORT ?? '8080';
+    const backendUrl = env.VITE_BACKEND_URL ?? `http://localhost:${backendPort}`;
 
     return {
         plugins: [svelte()],

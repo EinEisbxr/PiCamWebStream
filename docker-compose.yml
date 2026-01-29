@@ -5,7 +5,7 @@ services:
         env_file:
             - .env
         ports:
-            - '8080:8080'
+            - '${BACKEND_PORT:-8080}:${BACKEND_PORT:-8080}'
         restart: unless-stopped
         privileged: true
         devices:
@@ -22,10 +22,13 @@ services:
     frontend:
         build:
             context: ./frontend
+        environment:
+            - BACKEND_PORT=${BACKEND_PORT:-8080}
+            - NGINX_ENVSUBST_FILTER=$$BACKEND_PORT
         depends_on:
             - backend
         ports:
-            - '3000:80'
+            - '${PORT:-3000}:80'
         restart: unless-stopped
         networks:
             - picam
