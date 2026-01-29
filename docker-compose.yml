@@ -9,11 +9,11 @@ services:
         restart: unless-stopped
         privileged: true
         devices:
-            - "/dev:/dev"
+            - '/dev:/dev'
         volumes:
-            - "/run/udev:/run/udev:ro"
+            - '/run/udev:/run/udev:ro'
             # Required for Pi Camera DMA heap allocation
-            - "/dev/dma_heap:/dev/dma_heap"
+            - '/dev/dma_heap:/dev/dma_heap'
         group_add:
             - video
         networks:
